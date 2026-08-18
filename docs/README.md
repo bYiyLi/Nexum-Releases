@@ -36,6 +36,6 @@ production 与 development 使用独立 state / Runtime / port / identity；开�
 
 ## 文档维护边界
 
-用户文档只在 private `bYiyLi/Nexum` 中维护。`bYiyLi/Nexum-Releases` 是可删除、可重建的公开分发表面；其 README、使用手册、公开 qualification workflow/harness 和 Release assets 都必须能够从 `Nexum` 的受控源重新生成。
+用户文档只在 private `bYiyLi/Nexum` 中维护。`bYiyLi/Nexum-Releases` 是可删除、可重建的公开分发表面；其 README、使用手册、公开 qualification workflow、临时 qualification harness 和 Release assets 都由 `Nexum` 的受控源生成。qualification harness 只用于 draft candidate 验证，不进入正式 Release。
 
 公开 CI 的 workflow 与日志按公开信息设计：它们不得依赖隐藏源码或隐藏日志来保证安全。任何不能公开的源码、credential、开发目录、source map、测试源码或内部诊断数据都不能进入 public release boundary。
