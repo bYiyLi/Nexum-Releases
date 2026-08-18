@@ -1,0 +1,65 @@
+name: Desktop Qualification
+
+on:
+  repository_dispatch:
+    types: [desktop_candidate]
+
+permissions:
+  contents: read
+
+jobs:
+  validate-macos:
+    name: Validate Desktop / macOS arm64
+    runs-on: macos-14
+    steps:
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+      - name: Download draft Desktop candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_TAG: ${{ github.event.client_payload.candidateTag }}
+        run: gh release download "$CANDIDATE_TAG" --repo "$GITHUB_REPOSITORY" --dir candidate --pattern '*.dmg' --pattern desktop-qualification.mjs
+      - name: Qualify source-free DMG
+        run: node candidate/desktop-qualification.mjs --installer "$(find candidate -maxdepth 1 -name '*.dmg' -print -quit)"
+
+  validate-windows:
+    name: Validate Desktop / Windows x64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+      - name: Download draft Desktop candidate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_TAG: ${{ github.event.client_payload.candidateTag }}
+        run: gh release download "$CANDIDATE_TAG" --repo "$GITHUB_REPOSITORY" --dir candidate --pattern '*.exe' --pattern desktop-qualification.mjs
+      - name: Qualify source-free NSIS installer
+        shell: bash
+        run: node candidate/desktop-qualification.mjs --installer "$(find candidate -maxdepth 1 -name '*.exe' -print -quit)"
+
+  publish:
+    name: Attach verified Desktop installers
+    needs: [validate-macos, validate-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Promote installers and clean candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_TAG: ${{ github.event.client_payload.candidateTag }}
+          RUNTIME_TAG: ${{ github.event.client_payload.runtimeTag }}
+        run: |
+          mkdir installers
+          gh release download "$CANDIDATE_TAG" --repo "$GITHUB_REPOSITORY" --dir installers --pattern '*.dmg' --pattern '*.exe'
+          runtime_state="$(gh release view "$RUNTIME_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease --jq 'if .isDraft then "draft" elif .isPrerelease then "prerelease" else "published" end')"
+          test "$runtime_state" = "published"
+          gh release upload "$RUNTIME_TAG" installers/* --repo "$GITHUB_REPOSITORY" --clobber
+          for path in installers/*; do
+            asset="$(basename "$path")"
+            curl --fail --location --silent --show-error --output /dev/null "https://github.com/$GITHUB_REPOSITORY/releases/download/$RUNTIME_TAG/$asset"
+          done
+          gh release delete "$CANDIDATE_TAG" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes
