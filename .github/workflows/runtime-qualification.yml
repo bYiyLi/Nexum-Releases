@@ -1,0 +1,85 @@
+name: Runtime Qualification
+
+on:
+  repository_dispatch:
+    types: [runtime_candidate]
+
+permissions:
+  contents: read
+
+jobs:
+  validate-macos:
+    name: Validate Runtime / darwin-arm64
+    runs-on: macos-14
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Download draft candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.client_payload.tag }}
+        run: gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir candidate --pattern nexum-runtime.tgz --pattern runtime-manifest.json --pattern SHA256SUMS.txt --pattern runtime-qualification.mjs
+      - name: Qualify source-free Runtime
+        run: node candidate/runtime-qualification.mjs --artifact candidate/nexum-runtime.tgz --manifest candidate/runtime-manifest.json --checksums candidate/SHA256SUMS.txt
+
+  validate-windows:
+    name: Validate Runtime / windows-amd64
+    runs-on: windows-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Download draft candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.client_payload.tag }}
+        shell: bash
+        run: gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir candidate --pattern nexum-runtime.tgz --pattern runtime-manifest.json --pattern SHA256SUMS.txt --pattern runtime-qualification.mjs
+      - name: Qualify source-free Runtime
+        run: node candidate/runtime-qualification.mjs --artifact candidate/nexum-runtime.tgz --manifest candidate/runtime-manifest.json --checksums candidate/SHA256SUMS.txt
+
+  validate-linux:
+    name: Validate Runtime / linux-amd64
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Download draft candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.client_payload.tag }}
+        run: gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir candidate --pattern nexum-runtime.tgz --pattern runtime-manifest.json --pattern SHA256SUMS.txt --pattern runtime-qualification.mjs
+      - name: Qualify source-free Runtime
+        run: node candidate/runtime-qualification.mjs --artifact candidate/nexum-runtime.tgz --manifest candidate/runtime-manifest.json --checksums candidate/SHA256SUMS.txt
+
+  publish:
+    name: Promote verified Runtime
+    needs: [validate-macos, validate-windows, validate-linux]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: write
+    steps:
+      - name: Publish draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.client_payload.tag }}
+          SOURCE_COMMIT: ${{ github.event.client_payload.sourceCommit }}
+        run: |
+          gh release delete-asset "$TAG" runtime-qualification.mjs --repo "$GITHUB_REPOSITORY" --yes
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest --notes "Universal Nexum Runtime built from private source commit $SOURCE_COMMIT and source-free qualified on macOS arm64, Windows x64, and Linux x64."
+      - name: Verify anonymous assets
+        env:
+          TAG: ${{ github.event.client_payload.tag }}
+        run: |
+          for asset in nexum-runtime.tgz runtime-manifest.json SHA256SUMS.txt; do
+            curl --fail --location --silent --show-error --output /dev/null "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$asset"
+          done
