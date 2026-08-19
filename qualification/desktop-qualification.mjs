@@ -245,7 +245,7 @@ async function qualifyLinuxAppImage(path, runtimeSha) {
     "AppImage extraction"
   );
   const appRoot = join(extractRoot, "squashfs-root");
-  const executable = join(appRoot, "nexum");
+  const executable = join(appRoot, "Nexum");
   const resources = join(appRoot, "resources");
   await access(executable, fsConstants.X_OK);
   await access(join(resources, "node", "node"), fsConstants.X_OK);

@@ -3,81 +3,103 @@ import { constants } from "node:fs";
 import { access, readFile, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import process from "node:process";
+import { fileURLToPath } from "node:url";
 
 const repoRoot = resolve(import.meta.dirname, "..");
 const desktopRequire = createRequire(
   new URL("../apps/desktop/package.json", import.meta.url)
 );
 const { listPackage } = desktopRequire("@electron/asar");
-const args = new Map();
-for (let index = 2; index < process.argv.length; index += 2) {
-  args.set(process.argv[index], process.argv[index + 1]);
+if (
+  process.argv[1] &&
+  resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))
+) {
+  await main();
 }
 
-const appRoot = resolve(args.get("--app") ?? defaultAppRoot());
-const resourcesRoot =
-  process.platform === "darwin"
-    ? join(appRoot, "Contents", "Resources")
-    : join(appRoot, "resources");
-const executable = desktopExecutable(appRoot);
-const nodePath = join(
-  resourcesRoot,
-  "node",
-  process.platform === "win32" ? "node.exe" : "node"
-);
-const runtimeRoot = join(resourcesRoot, "runtime");
-const asarPath = join(resourcesRoot, "app.asar");
-
-await requireExecutable(executable);
-await requireExecutable(nodePath);
-for (const relative of [
-  "dist/main.js",
-  "web/index.html",
-  "nexum-runtime.json",
-  "embedded-runtime.json",
-  "node_modules/@nexum/core/package.json",
-  "node_modules/@nexum/daemon/package.json"
-]) {
-  await requireRegularFile(join(runtimeRoot, relative));
-}
-await verifyShellAsar(asarPath);
-await verifyRuntimeWebIsBrowserOnly(runtimeRoot);
-
-console.log(
-  `Verified Electron Desktop shell + standalone Node + embedded Runtime: ${appRoot}`
-);
-
-function defaultAppRoot() {
-  if (process.platform === "darwin" && process.arch === "arm64") {
-    return join(repoRoot, "apps", "desktop", "out", "mac-arm64", "Nexum.app");
+async function main() {
+  const args = new Map();
+  for (let index = 2; index < process.argv.length; index += 2) {
+    args.set(process.argv[index], process.argv[index + 1]);
   }
-  if (process.platform === "win32" && process.arch === "x64") {
-    return join(repoRoot, "apps", "desktop", "out", "win-unpacked");
+  const targetPlatform = args.get("--platform") ?? process.platform;
+  const targetArch = args.get("--arch") ?? process.arch;
+  assertSupportedTarget(targetPlatform, targetArch);
+
+  const appRoot = resolve(
+    args.get("--app") ?? defaultAppRoot(targetPlatform, targetArch)
+  );
+  const resourcesRoot = desktopResourcesRoot(appRoot, targetPlatform);
+  const executable = desktopExecutable(appRoot, targetPlatform);
+  const nodePath = join(
+    resourcesRoot,
+    "node",
+    targetPlatform === "win32" ? "node.exe" : "node"
+  );
+  const runtimeRoot = join(resourcesRoot, "runtime");
+  const asarPath = join(resourcesRoot, "app.asar");
+
+  await requirePackagedExecutable(executable, targetPlatform);
+  await requirePackagedExecutable(nodePath, targetPlatform);
+  for (const relative of [
+    "dist/main.js",
+    "web/index.html",
+    "nexum-runtime.json",
+    "embedded-runtime.json",
+    "node_modules/@nexum/core/package.json",
+    "node_modules/@nexum/daemon/package.json"
+  ]) {
+    await requireRegularFile(join(runtimeRoot, relative));
   }
-  if (process.platform === "linux" && process.arch === "x64") {
-    return join(repoRoot, "apps", "desktop", "out", "linux-unpacked");
-  }
-  throw new Error(
-    `Desktop release verification does not support ${process.platform}-${process.arch}`
+  await verifyShellAsar(asarPath);
+  await verifyRuntimeWebIsBrowserOnly(runtimeRoot);
+
+  console.log(
+    `Verified Electron Desktop shell + standalone Node + embedded Runtime: ${appRoot}`
   );
 }
 
-function desktopExecutable(root) {
-  if (process.platform === "darwin") {
+export function defaultAppRoot(targetPlatform, targetArch) {
+  if (targetPlatform === "darwin" && targetArch === "arm64") {
+    return join(repoRoot, "apps", "desktop", "out", "mac-arm64", "Nexum.app");
+  }
+  if (targetPlatform === "win32" && targetArch === "x64") {
+    return join(repoRoot, "apps", "desktop", "out", "win-unpacked");
+  }
+  if (targetPlatform === "linux" && targetArch === "x64") {
+    return join(repoRoot, "apps", "desktop", "out", "linux-unpacked");
+  }
+  throw new Error(
+    `Desktop release verification does not support ${targetPlatform}-${targetArch}`
+  );
+}
+
+export function desktopResourcesRoot(root, targetPlatform) {
+  return targetPlatform === "darwin"
+    ? join(root, "Contents", "Resources")
+    : join(root, "resources");
+}
+
+export function desktopExecutable(root, targetPlatform) {
+  if (targetPlatform === "darwin") {
     return join(root, "Contents", "MacOS", "Nexum");
   }
-  if (process.platform === "win32") {
+  if (targetPlatform === "win32") {
     return join(root, "Nexum.exe");
   }
-  if (process.platform === "linux") {
+  if (targetPlatform === "linux") {
     return join(root, "Nexum");
   }
-  throw new Error(`Unsupported Desktop platform: ${process.platform}`);
+  throw new Error(`Unsupported Desktop platform: ${targetPlatform}`);
 }
 
 async function verifyShellAsar(path) {
   await requireRegularFile(path);
-  const entries = listPackage(path);
+  verifyShellEntries(listPackage(path));
+}
+
+export function verifyShellEntries(rawEntries) {
+  const entries = rawEntries.map(normalizeAsarEntry);
   const forbidden = entries.filter((entry) =>
     /(?:^|\/)(?:src-tauri|\.runtime|\.bootstrap|resources)(?:\/|$)|\.test\.js$|\.tsx?$|\.map$/u.test(
       entry
@@ -94,6 +116,24 @@ async function verifyShellAsar(path) {
   if (!entries.some((entry) => entry === "/icons/icon.png")) {
     throw new Error("Electron app.asar is missing the Nexum application icon.");
   }
+}
+
+export function normalizeAsarEntry(entry) {
+  const normalized = entry.replaceAll("\\", "/");
+  return normalized.startsWith("/") ? normalized : `/${normalized}`;
+}
+
+function assertSupportedTarget(targetPlatform, targetArch) {
+  if (
+    (targetPlatform === "darwin" && targetArch === "arm64") ||
+    (targetPlatform === "win32" && targetArch === "x64") ||
+    (targetPlatform === "linux" && targetArch === "x64")
+  ) {
+    return;
+  }
+  throw new Error(
+    `Desktop release verification does not support ${targetPlatform}-${targetArch}`
+  );
 }
 
 async function verifyRuntimeWebIsBrowserOnly(runtimeRoot) {
@@ -146,4 +186,12 @@ async function requireRegularFile(path) {
 async function requireExecutable(path) {
   await requireRegularFile(path);
   await access(path, constants.X_OK);
+}
+
+async function requirePackagedExecutable(path, targetPlatform) {
+  if (targetPlatform === "win32") {
+    await requireRegularFile(path);
+    return;
+  }
+  await requireExecutable(path);
 }
