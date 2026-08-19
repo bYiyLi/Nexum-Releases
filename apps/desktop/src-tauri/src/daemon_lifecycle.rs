@@ -421,10 +421,14 @@ fn daemon_launch_spec(app: &AppHandle) -> Result<LaunchSpec, String> {
     let runtime = runtime_bootstrap::bundled_runtime(&resource_dir)?;
     Ok(LaunchSpec {
         node: runtime.node,
-        script: runtime.root.join("dist/main.js"),
+        script: runtime_entrypoint_script(),
         args: runtime_entrypoint_args(),
         working_directory: runtime.root,
     })
+}
+
+fn runtime_entrypoint_script() -> PathBuf {
+    PathBuf::from("dist/main.js")
 }
 
 fn runtime_entrypoint_args() -> Vec<String> {
@@ -563,7 +567,10 @@ mod tests {
 
     #[test]
     fn runtime_entrypoint_uses_cli_start_contract() {
+        let script = runtime_entrypoint_script();
         let args = runtime_entrypoint_args();
+        assert_eq!(script, PathBuf::from("dist/main.js"));
+        assert!(script.is_relative());
         assert_eq!(args[0], "--profile");
         assert_eq!(args[2], "start");
         assert_eq!(
