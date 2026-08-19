@@ -1,0 +1,57 @@
+appId: com.nexum.desktop
+productName: Nexum
+asar: true
+afterPack: scripts/after-pack.mjs
+
+directories:
+  output: out
+
+files:
+  - dist/**/*.js
+  - "!dist/**/*.test.js"
+  - assets/bootstrap.html
+  - icons/icon.png
+  - icons/icon.png
+
+extraResources:
+  - from: resources/node
+    to: node
+
+electronFuses:
+  runAsNode: false
+  enableNodeOptionsEnvironmentVariable: false
+  enableNodeCliInspectArguments: false
+  enableEmbeddedAsarIntegrityValidation: true
+  onlyLoadAppFromAsar: true
+
+mac:
+  target:
+    - target: dmg
+      arch:
+        - arm64
+  icon: icons/icon.icns
+  category: public.app-category.developer-tools
+  identity: "-"
+  hardenedRuntime: false
+  artifactName: Nexum-${version}-${arch}.${ext}
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: icons/icon.ico
+  artifactName: NexumSetup-${version}-${arch}.${ext}
+
+nsis:
+  oneClick: true
+  perMachine: false
+
+linux:
+  target:
+    - target: AppImage
+      arch:
+        - x64
+  icon: icons/icon.png
+  category: Development
+  artifactName: Nexum-${version}-${arch}.${ext}

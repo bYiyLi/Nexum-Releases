@@ -26,7 +26,7 @@ const checksumsPath = resolve(
     join(repoRoot, "dist", "release", "runtime", "SHA256SUMS.txt")
 );
 const output = resolve(
-  args.output ?? join(repoRoot, "apps", "desktop", ".runtime")
+  args.output ?? join(repoRoot, "apps", "desktop", "resources", "runtime")
 );
 
 const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
@@ -82,7 +82,12 @@ try {
     }
   }
 
-  await rm(output, { recursive: true, force: true });
+  await rm(output, {
+    recursive: true,
+    force: true,
+    maxRetries: 5,
+    retryDelay: 100
+  });
   await mkdir(output, { recursive: true });
   await cp(packageRoot, output, { recursive: true });
   await writeFile(
@@ -99,7 +104,12 @@ try {
     "utf8"
   );
 } finally {
-  await rm(extractionRoot, { recursive: true, force: true });
+  await rm(extractionRoot, {
+    recursive: true,
+    force: true,
+    maxRetries: 5,
+    retryDelay: 100
+  });
 }
 
 console.log(`Prepared embedded Desktop Runtime: ${output} sha256=${digest}`);

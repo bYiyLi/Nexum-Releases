@@ -1,24 +1,24 @@
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, realpath, rm, stat } from "node:fs/promises";
+import { mkdtemp, realpath, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import process from "node:process";
 
 const adhoc = process.argv.includes("--adhoc");
+const dmgArgumentIndex = process.argv.indexOf("--dmg");
+const dmgArgument =
+  dmgArgumentIndex >= 0 ? process.argv[dmgArgumentIndex + 1] : undefined;
+if (dmgArgumentIndex >= 0 && !dmgArgument) {
+  throw new Error("--dmg requires a path.");
+}
 if (process.platform !== "darwin" || process.arch !== "arm64") {
   throw new Error("macOS DMG verification requires darwin-arm64.");
 }
 
 const repoRoot = resolve(import.meta.dirname, "..");
-const packageJson = JSON.parse(
-  await readFile(join(repoRoot, "apps", "desktop", "package.json"), "utf8")
-);
-const dmgPath = join(
-  repoRoot,
-  "dist",
-  "release",
-  "macos",
-  `Nexum_${packageJson.version}_aarch64.dmg`
+const dmgPath = resolve(
+  dmgArgument ??
+    join(repoRoot, "apps", "desktop", "out", "Nexum-0.1.0-arm64.dmg")
 );
 const mountRoot = await mkdtemp(join(tmpdir(), "nexum-dmg-verify-"));
 let mounted = false;

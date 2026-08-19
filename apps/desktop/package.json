@@ -2,13 +2,34 @@
   "name": "@nexum/desktop",
   "version": "0.1.0",
   "private": true,
+  "description": "Nexum Electron desktop shell",
+  "author": "Nexum",
+  "productName": "Nexum",
+  "main": "dist/main.js",
+  "type": "commonjs",
   "scripts": {
-    "prepare:bootstrap": "node ../../scripts/prepare-desktop-bootstrap.mjs",
+    "prepare:node": "node ../../scripts/prepare-desktop-node.mjs",
     "prepare:runtime": "node ../../scripts/prepare-desktop-runtime.mjs",
-    "dev": "pnpm --dir ../.. build:runtime-release && pnpm prepare:runtime && cargo tauri dev --config src-tauri/tauri.dev.conf.json",
-    "build": "cargo tauri build && node ../../scripts/verify-desktop-release.mjs",
-    "build:macos-local-release": "pnpm --dir ../.. build:runtime-release && pnpm prepare:runtime && cargo tauri build --bundles app --no-sign --ci && node ../../scripts/verify-desktop-release.mjs && node ../../scripts/package-macos-dmg.mjs && node ../../scripts/verify-macos-dmg.mjs --adhoc && node ../../scripts/write-macos-release-notes.mjs",
-    "check:macos-release-prerequisites": "node ../../scripts/check-macos-release-prerequisites.mjs",
-    "check:rust": "cargo check --manifest-path src-tauri/Cargo.toml"
+    "prepare:resources": "pnpm --dir ../.. build:runtime-release && pnpm prepare:runtime && pnpm prepare:node",
+    "build:shell": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "pnpm build:shell && node --test dist/profile.test.js dist/runtime-supervisor.test.js dist/security.test.js dist/tray-controller.test.js dist/window-state.test.js",
+    "dev": "pnpm prepare:resources && pnpm build:shell && electron .",
+    "package": "pnpm build:shell && electron-builder --dir",
+    "make": "pnpm build:shell && electron-builder",
+    "make:macos": "pnpm build:shell && electron-builder --mac",
+    "make:windows": "pnpm build:shell && electron-builder --win",
+    "make:linux": "pnpm build:shell && electron-builder --linux",
+    "make:all": "pnpm build:shell && electron-builder --mac --win --linux",
+    "build": "pnpm prepare:resources && pnpm make && node ../../scripts/verify-desktop-release.mjs",
+    "build:macos-local-release": "pnpm build && node ../../scripts/verify-macos-dmg.mjs --adhoc && node ../../scripts/write-macos-release-notes.mjs",
+    "check:macos-release-prerequisites": "node ../../scripts/check-macos-release-prerequisites.mjs"
+  },
+  "devDependencies": {
+    "@electron/asar": "3.4.1",
+    "@types/node": "^22.0.0",
+    "electron": "43.4.1",
+    "electron-builder": "26.15.7",
+    "typescript": "^5.9.0"
   }
 }

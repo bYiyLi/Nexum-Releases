@@ -144,7 +144,8 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 22
-      - run: rustup default stable
+      - name: Install Electron Desktop dependencies
+        run: pnpm install --filter @nexum/desktop --no-frozen-lockfile
       - name: Download exact Runtime candidate
         env:
           GH_TOKEN: ${{ github.token }}
@@ -153,34 +154,33 @@ jobs:
       - name: Stage embedded Runtime
         run: |
           node scripts/prepare-desktop-runtime.mjs --artifact candidate/nexum-runtime.tgz --manifest candidate/runtime-manifest.json --checksums candidate/SHA256SUMS.txt
-          node scripts/prepare-desktop-bootstrap.mjs
+          node scripts/prepare-desktop-node.mjs
       - name: Verify Desktop source boundary
         shell: bash
         run: |
-          ! git grep -n "releases/latest/download\|runtime-manifest.json" -- apps/desktop/src-tauri apps/desktop/bootstrap
-          git grep -q "windows_subsystem = \"windows\"" -- apps/desktop/src-tauri/src/main.rs
-          git grep -q "CREATE_NO_WINDOW" -- apps/desktop/src-tauri/src/daemon_lifecycle.rs
-      - name: Test Desktop Rust source
-        env:
-          RUSTFLAGS: -Dwarnings
-        run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
-      - name: Build public Desktop app
-        env:
-          RUSTFLAGS: -Dwarnings
-        run: pnpm dlx @tauri-apps/cli@2.11.4 build --bundles app --no-sign --ci
-        working-directory: apps/desktop
+          ! git grep -n "releases/latest/download\|runtime-manifest.json" -- apps/desktop/src apps/desktop/electron-builder.yml
+          ! git grep -n -E "ipcMain|ipcRenderer|contextBridge|preload:" -- apps/desktop/src
+          git grep -q "nodeIntegration: false" -- apps/desktop/src/main.ts
+          git grep -q "contextIsolation: true" -- apps/desktop/src/main.ts
+          git grep -q "sandbox: true" -- apps/desktop/src/main.ts
+          git grep -q "onlyLoadAppFromAsar: true" -- apps/desktop/electron-builder.yml
+      - name: Test Electron Desktop shell
+        run: pnpm --dir apps/desktop test
+      - name: Build public Electron Desktop DMG
+        run: pnpm --dir apps/desktop make:macos
       - name: Package and qualify DMG
         shell: bash
         run: |
           node scripts/verify-desktop-release.mjs
-          node scripts/package-macos-dmg.mjs
-          node scripts/verify-macos-dmg.mjs --adhoc
+          installer="$(find apps/desktop/out -maxdepth 1 -name '*.dmg' -print -quit)"
+          test -n "$installer"
+          node scripts/verify-macos-dmg.mjs --adhoc --dmg "$installer"
           runtime_sha="$(node -e "console.log(require('./candidate/runtime-manifest.json').current.sha256)")"
-          node qualification/desktop-qualification.mjs --installer "$(find dist/release/macos -name '*.dmg' -print -quit)" --runtime-sha "$runtime_sha"
+          node qualification/desktop-qualification.mjs --installer "$installer" --runtime-sha "$runtime_sha"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: desktop-macos-arm64
-          path: dist/release/macos/*.dmg
+          path: apps/desktop/out/*.dmg
           if-no-files-found: error
           retention-days: 1
 
@@ -199,7 +199,9 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 22
-      - run: rustup default stable
+      - name: Install Electron Desktop dependencies
+        shell: bash
+        run: pnpm install --filter @nexum/desktop --no-frozen-lockfile
       - name: Download exact Runtime candidate
         shell: bash
         env:
@@ -210,31 +212,87 @@ jobs:
         shell: bash
         run: |
           node scripts/prepare-desktop-runtime.mjs --artifact candidate/nexum-runtime.tgz --manifest candidate/runtime-manifest.json --checksums candidate/SHA256SUMS.txt
-          node scripts/prepare-desktop-bootstrap.mjs
+          node scripts/prepare-desktop-node.mjs
       - name: Verify Desktop source boundary
         shell: bash
         run: |
-          ! git grep -n "releases/latest/download\|runtime-manifest.json" -- apps/desktop/src-tauri apps/desktop/bootstrap
-          git grep -q "windows_subsystem = \"windows\"" -- apps/desktop/src-tauri/src/main.rs
-          git grep -q "CREATE_NO_WINDOW" -- apps/desktop/src-tauri/src/daemon_lifecycle.rs
-      - name: Test Desktop Rust source
-        env:
-          RUSTFLAGS: -Dwarnings
-        run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml
-      - name: Build public Desktop NSIS installer
-        env:
-          RUSTFLAGS: -Dwarnings
-        run: pnpm dlx @tauri-apps/cli@2.11.4 build --bundles nsis
-        working-directory: apps/desktop
+          ! git grep -n "releases/latest/download\|runtime-manifest.json" -- apps/desktop/src apps/desktop/electron-builder.yml
+          ! git grep -n -E "ipcMain|ipcRenderer|contextBridge|preload:" -- apps/desktop/src
+          git grep -q "nodeIntegration: false" -- apps/desktop/src/main.ts
+          git grep -q "contextIsolation: true" -- apps/desktop/src/main.ts
+          git grep -q "sandbox: true" -- apps/desktop/src/main.ts
+          git grep -q "onlyLoadAppFromAsar: true" -- apps/desktop/electron-builder.yml
+      - name: Test Electron Desktop shell
+        shell: bash
+        run: pnpm --dir apps/desktop test
+      - name: Build public Electron Desktop NSIS installer
+        shell: bash
+        run: pnpm --dir apps/desktop make:windows
       - name: Qualify installed Windows Desktop
         shell: bash
         run: |
+          node scripts/verify-desktop-release.mjs
+          installer="$(find apps/desktop/out -maxdepth 1 -name 'NexumSetup-*.exe' -print -quit)"
+          test -n "$installer"
           runtime_sha="$(node -e "console.log(require('./candidate/runtime-manifest.json').current.sha256)")"
-          node qualification/desktop-qualification.mjs --installer "$(find apps/desktop/src-tauri/target/release/bundle/nsis -name '*.exe' -print -quit)" --runtime-sha "$runtime_sha"
+          node qualification/desktop-qualification.mjs --installer "$installer" --runtime-sha "$runtime_sha"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: desktop-windows-x64
-          path: apps/desktop/src-tauri/target/release/bundle/nsis/*.exe
+          path: apps/desktop/out/NexumSetup-*.exe
+          if-no-files-found: error
+          retention-days: 1
+
+  desktop-linux:
+    name: Desktop build / Linux x64
+    needs: [runtime-macos, runtime-windows, runtime-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.client_payload.publicCommit }}
+      - uses: pnpm/action-setup@f520eceda224fe1a4aed5a2a27a194379a409996 # v6
+        with:
+          version: 10.34.5
+          run_install: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+      - name: Install Electron Desktop dependencies
+        run: pnpm install --filter @nexum/desktop --no-frozen-lockfile
+      - name: Download exact Runtime candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.client_payload.tag }}
+        run: gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir candidate --pattern nexum-runtime.tgz --pattern runtime-manifest.json --pattern SHA256SUMS.txt
+      - name: Stage embedded Runtime
+        run: |
+          node scripts/prepare-desktop-runtime.mjs --artifact candidate/nexum-runtime.tgz --manifest candidate/runtime-manifest.json --checksums candidate/SHA256SUMS.txt
+          node scripts/prepare-desktop-node.mjs
+      - name: Verify Desktop source boundary
+        run: |
+          ! git grep -n "releases/latest/download\|runtime-manifest.json" -- apps/desktop/src apps/desktop/electron-builder.yml
+          ! git grep -n -E "ipcMain|ipcRenderer|contextBridge|preload:" -- apps/desktop/src
+          git grep -q "nodeIntegration: false" -- apps/desktop/src/main.ts
+          git grep -q "contextIsolation: true" -- apps/desktop/src/main.ts
+          git grep -q "sandbox: true" -- apps/desktop/src/main.ts
+          git grep -q "onlyLoadAppFromAsar: true" -- apps/desktop/electron-builder.yml
+      - name: Test Electron Desktop shell
+        run: pnpm --dir apps/desktop test
+      - name: Build public Electron Desktop AppImage
+        run: pnpm --dir apps/desktop make:linux
+      - name: Qualify installed Linux Desktop
+        run: |
+          node scripts/verify-desktop-release.mjs
+          installer="$(find apps/desktop/out -maxdepth 1 -name '*.AppImage' -print -quit)"
+          test -n "$installer"
+          chmod +x "$installer"
+          runtime_sha="$(node -e "console.log(require('./candidate/runtime-manifest.json').current.sha256)")"
+          xvfb-run -a node qualification/desktop-qualification.mjs --installer "$installer" --runtime-sha "$runtime_sha"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: desktop-linux-x64
+          path: apps/desktop/out/*.AppImage
           if-no-files-found: error
           retention-days: 1
 
@@ -246,6 +304,7 @@ jobs:
       - public-headless-linux
       - desktop-macos
       - desktop-windows
+      - desktop-linux
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -262,9 +321,10 @@ jobs:
         run: |
           gh release upload "$TAG" installers/* --repo "$GITHUB_REPOSITORY" --clobber
           gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease=false --latest \
-            --notes "Nexum Universal Runtime and self-contained Desktop installers. The same Runtime bytes were qualified on macOS arm64, Windows x64, and Linux x64; macOS and Windows installers embed that exact Runtime and passed installed launch qualification. The macOS DMG is ad-hoc sealed and not notarized."
+            --notes "Nexum Universal Runtime and self-contained Electron Desktop installers. The same Runtime bytes were qualified on macOS arm64, Windows x64, and Linux x64; all three Desktop installers embed that exact Runtime and passed installed Renderer-to-HTTP qualification. The macOS DMG is ad-hoc sealed and not notarized."
           for asset in nexum-runtime.tgz runtime-manifest.json SHA256SUMS.txt; do
             curl --fail --location --silent --show-error --output /dev/null "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/$asset"
           done
           test "$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '[.assets[].name | select(endswith(".dmg"))] | length')" = "1"
           test "$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '[.assets[].name | select(endswith(".exe"))] | length')" = "1"
+          test "$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '[.assets[].name | select(endswith(".AppImage"))] | length')" = "1"

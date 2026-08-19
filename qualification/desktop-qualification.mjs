@@ -23,7 +23,7 @@ const installer = args.get("--installer");
 const expectedRuntimeSha = args.get("--runtime-sha");
 if (!installer || !expectedRuntimeSha) {
   throw new Error(
-    "Usage: node desktop-qualification.mjs --installer <dmg-or-exe> --runtime-sha <sha256>"
+    "Usage: node desktop-qualification.mjs --installer <dmg-exe-or-appimage> --runtime-sha <sha256>"
   );
 }
 
@@ -37,15 +37,15 @@ if (process.platform === "darwin" && process.arch === "arm64") {
   await qualifyMacosDmg(installerPath, expectedRuntimeSha);
 } else if (process.platform === "win32" && process.arch === "x64") {
   await qualifyWindowsInstaller(installerPath, expectedRuntimeSha);
+} else if (process.platform === "linux" && process.arch === "x64") {
+  await qualifyLinuxAppImage(installerPath, expectedRuntimeSha);
 } else {
   throw new Error(
     `Unsupported Desktop qualification platform: ${process.platform}/${process.arch}`
   );
 }
 
-console.log(
-  `Verified embedded-runtime Desktop installer: ${basename(installerPath)}`
-);
+console.log(`Verified Electron Desktop installer: ${basename(installerPath)}`);
 
 async function qualifyMacosDmg(path, runtimeSha) {
   requireSuccess(
@@ -53,7 +53,7 @@ async function qualifyMacosDmg(path, runtimeSha) {
     "DMG verify"
   );
   const root = await mkdtemp(
-    join(await realpath(tmpdir()), "nexum-desktop-dmg-")
+    join(await realpath(tmpdir()), "nexum-electron-dmg-")
   );
   const mount = join(root, "mount");
   let mounted = false;
@@ -63,21 +63,16 @@ async function qualifyMacosDmg(path, runtimeSha) {
       spawnSync(
         "hdiutil",
         ["attach", path, "-readonly", "-nobrowse", "-mountpoint", mount],
-        {
-          encoding: "utf8"
-        }
+        { encoding: "utf8" }
       ),
       "DMG attach"
     );
     mounted = true;
     const app = join(mount, "Nexum.app");
-    const executable = await findMacosExecutable(
-      join(app, "Contents", "MacOS")
-    );
-    if (!executable) throw new Error("Nexum.app has no executable payload.");
+    const executable = join(app, "Contents", "MacOS", "Nexum");
     const resources = join(app, "Contents", "Resources");
     await access(executable, fsConstants.X_OK);
-    await access(join(resources, "bootstrap", "node"), fsConstants.X_OK);
+    await access(join(resources, "node", "node"), fsConstants.X_OK);
     await verifyEmbeddedRuntime(resources, runtimeSha);
     requireSuccess(
       spawnSync("codesign", ["--verify", "--deep", "--strict", app], {
@@ -99,39 +94,67 @@ async function qualifyMacosDmg(path, runtimeSha) {
 
 async function qualifyMacosLaunch(app, executable) {
   const home = await mkdtemp(
-    join(await realpath(tmpdir()), "nexum-desktop-home-")
+    join(await realpath(tmpdir()), "nexum-electron-home-")
   );
+  const project = join(home, "Project");
+  const stdout = join(home, "desktop.stdout.log");
+  const stderr = join(home, "desktop.stderr.log");
   const port = await reserveLoopbackPort();
-  await writeProductionConfig(home, port);
+  await mkdir(project, { recursive: true });
+  await writeProductionConfig(home, port, project);
   const child = spawn(
     "open",
-    ["-n", "-W", app, "--env", `HOME=${home}`, "--env", `USERPROFILE=${home}`],
-    { stdio: ["ignore", "pipe", "pipe"] }
+    [
+      "-n",
+      "-W",
+      "-o",
+      stdout,
+      "--stderr",
+      stderr,
+      app,
+      "--env",
+      `HOME=${home}`,
+      "--env",
+      `USERPROFILE=${home}`,
+      "--env",
+      "NEXUM_DESKTOP_DIAGNOSTICS=1"
+    ],
+    { stdio: "ignore" }
   );
-  const output = captureProcessOutput(child);
   try {
-    await waitForHealth(port, child, 30_000);
+    await waitForHealth(port, child, 45_000);
+    await waitForUiLoadedMarker(
+      port,
+      () => readLogs(stdout, stderr),
+      child,
+      15_000
+    );
+    await verifyBrowserManagementFlow(port, project);
     const processProbe = spawnSync("pgrep", ["-f", executable], {
       encoding: "utf8"
     });
     if (processProbe.status !== 0) {
       throw new Error(
-        `Normal macOS app launch did not leave Nexum running: ${JSON.stringify(output())}`
+        "LaunchServices did not leave the Electron application running."
       );
     }
   } finally {
     spawnSync("pkill", ["-TERM", "-f", executable], { encoding: "utf8" });
-    await sleep(500);
+    await sleep(800);
     if (child.exitCode === null) child.kill("SIGTERM");
     await rm(home, { recursive: true, force: true });
   }
 }
 
 async function qualifyWindowsInstaller(path, runtimeSha) {
-  const home = await mkdtemp(join(tmpdir(), "nexum-desktop-home-"));
+  const home = await mkdtemp(join(tmpdir(), "nexum-electron-home-"));
+  const project = join(home, "Project");
   const localAppData = join(home, "AppData", "Local");
+  await mkdir(project, { recursive: true });
   await mkdir(localAppData, { recursive: true });
-  const installEnv = {
+  const port = await reserveLoopbackPort();
+  await writeProductionConfig(home, port, project);
+  const env = {
     ...process.env,
     LOCALAPPDATA: localAppData,
     USERPROFILE: home,
@@ -139,44 +162,38 @@ async function qualifyWindowsInstaller(path, runtimeSha) {
     NEXUM_DESKTOP_DIAGNOSTICS: "1"
   };
   requireSuccess(
-    spawnSync(path, ["/S"], { encoding: "utf8", env: installEnv }),
+    spawnSync(path, ["/S"], { encoding: "utf8", env, windowsHide: true }),
     "silent NSIS installation"
   );
-  const installRoot = join(localAppData, "Nexum");
-  const executable = join(installRoot, "nexum-desktop.exe");
-  await access(executable, fsConstants.X_OK);
+
+  const installRoot = join(localAppData, "Programs", "Nexum");
+  const executable = await findFile(installRoot, "Nexum.exe", 4);
+  if (!executable)
+    throw new Error(`Installed Nexum.exe was not found under ${installRoot}.`);
   verifyWindowsGuiSubsystem(await readFile(executable));
-  const bundledNode = join(installRoot, "bootstrap", "node.exe");
+  const resources = join(resolve(executable, ".."), "resources");
+  const bundledNode = join(resources, "node", "node.exe");
   await access(bundledNode, fsConstants.X_OK);
   requireSuccess(
     spawnSync(bundledNode, ["--version"], {
       encoding: "utf8",
-      env: installEnv,
+      env,
       windowsHide: true
     }),
-    "bundled Desktop Node bootstrap"
+    "bundled standalone Node"
   );
-  await verifyEmbeddedRuntime(installRoot, runtimeSha);
-  await qualifyWindowsEmbeddedRuntimeDirectly(installRoot, installEnv);
-  const port = await reserveLoopbackPort();
-  await writeProductionConfig(home, port);
+  await verifyEmbeddedRuntime(resources, runtimeSha);
+
   const child = spawn(executable, [], {
-    env: installEnv,
+    env,
     windowsHide: true,
     stdio: ["ignore", "pipe", "pipe"]
   });
   const output = captureProcessOutput(child);
   try {
-    try {
-      await waitForHealth(port, child, 60_000);
-      await waitForDesktopIpcBridge(child, output, 15_000);
-    } catch (error) {
-      const diagnostics = collectWindowsDiagnostics(child.pid, installEnv);
-      throw new Error(
-        `${error instanceof Error ? error.message : String(error)}; Desktop output: ${JSON.stringify(output())}; Windows diagnostics: ${JSON.stringify(diagnostics)}`,
-        { cause: error }
-      );
-    }
+    await waitForHealth(port, child, 60_000);
+    await waitForUiLoadedMarker(port, async () => output(), child, 20_000);
+    await verifyBrowserManagementFlow(port, project);
     const processProbe = spawnSync(
       "powershell",
       [
@@ -184,63 +201,29 @@ async function qualifyWindowsInstaller(path, runtimeSha) {
         "-Command",
         `(Get-Process -Id ${child.pid}).MainWindowHandle.ToInt64()`
       ],
-      { encoding: "utf8", env: installEnv }
+      { encoding: "utf8", env }
     );
-    requireSuccess(processProbe, "inspect Desktop main window");
+    requireSuccess(processProbe, "inspect Electron main window");
     if (Number(processProbe.stdout.trim()) === 0) {
       throw new Error(
-        `Windows Desktop did not create a GUI window: ${JSON.stringify(output())}`
+        `Windows Electron Desktop did not create a GUI window: ${JSON.stringify(output())}`
       );
     }
-  } finally {
-    await terminateProcessTree(child.pid);
-    const uninstaller = await findFile(installRoot, "uninstall.exe", 2);
-    if (uninstaller) {
-      spawnSync(uninstaller, ["/S"], { encoding: "utf8", env: installEnv });
-    }
-    await rm(home, {
-      recursive: true,
-      force: true,
-      maxRetries: 8,
-      retryDelay: 200
-    });
-  }
-}
-
-async function qualifyWindowsEmbeddedRuntimeDirectly(installRoot, installEnv) {
-  const home = await mkdtemp(join(tmpdir(), "nexum-desktop-runtime-home-"));
-  const port = await reserveLoopbackPort();
-  await writeProductionConfig(home, port);
-  const env = {
-    ...installEnv,
-    HOME: home,
-    USERPROFILE: home
-  };
-  const child = spawn(
-    join(installRoot, "bootstrap", "node.exe"),
-    [
-      join(installRoot, "runtime", "dist", "main.js"),
-      "--profile",
-      "production",
-      "start"
-    ],
-    {
-      cwd: join(installRoot, "runtime"),
-      env,
-      windowsHide: true,
-      stdio: ["ignore", "pipe", "pipe"]
-    }
-  );
-  const output = captureProcessOutput(child);
-  try {
-    await waitForHealth(port, child, 30_000);
   } catch (error) {
     throw new Error(
-      `Installed embedded Runtime could not start directly: ${error instanceof Error ? error.message : String(error)}; output=${JSON.stringify(output())}`,
+      `${error instanceof Error ? error.message : String(error)}; Desktop output: ${JSON.stringify(output())}`,
       { cause: error }
     );
   } finally {
     await terminateProcessTree(child.pid);
+    const uninstaller = await findFile(installRoot, "Uninstall Nexum.exe", 2);
+    if (uninstaller) {
+      spawnSync(uninstaller, ["/S"], {
+        encoding: "utf8",
+        env,
+        windowsHide: true
+      });
+    }
     await rm(home, {
       recursive: true,
       force: true,
@@ -250,31 +233,54 @@ async function qualifyWindowsEmbeddedRuntimeDirectly(installRoot, installEnv) {
   }
 }
 
-function collectWindowsDiagnostics(pid, env) {
-  const processProbe = spawnSync(
-    "powershell",
-    [
-      "-NoProfile",
-      "-Command",
-      `$root=${pid}; Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -eq $root -or $_.ParentProcessId -eq $root -or $_.CommandLine -like '*runtime\\dist\\main.js*' } | Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress`
-    ],
-    { encoding: "utf8", env }
+async function qualifyLinuxAppImage(path, runtimeSha) {
+  const root = await mkdtemp(join(await realpath(tmpdir()), "nexum-appimage-"));
+  const extractRoot = join(root, "extract");
+  await mkdir(extractRoot);
+  requireSuccess(
+    spawnSync(path, ["--appimage-extract"], {
+      cwd: extractRoot,
+      encoding: "utf8"
+    }),
+    "AppImage extraction"
   );
-  const listenerProbe = spawnSync(
-    "powershell",
-    [
-      "-NoProfile",
-      "-Command",
-      "Get-NetTCPConnection -State Listen | Where-Object { $_.LocalAddress -eq '127.0.0.1' } | Select-Object LocalAddress,LocalPort,OwningProcess | ConvertTo-Json -Compress"
-    ],
-    { encoding: "utf8", env }
-  );
-  return {
-    processes: processProbe.stdout.trim(),
-    processProbeError: processProbe.stderr.trim(),
-    listeners: listenerProbe.stdout.trim(),
-    listenerProbeError: listenerProbe.stderr.trim()
+  const appRoot = join(extractRoot, "squashfs-root");
+  const executable = join(appRoot, "nexum");
+  const resources = join(appRoot, "resources");
+  await access(executable, fsConstants.X_OK);
+  await access(join(resources, "node", "node"), fsConstants.X_OK);
+  await verifyEmbeddedRuntime(resources, runtimeSha);
+
+  const home = await mkdtemp(join(root, "home-"));
+  const project = join(home, "Project");
+  const port = await reserveLoopbackPort();
+  await mkdir(project, { recursive: true });
+  await writeProductionConfig(home, port, project);
+  const env = {
+    ...process.env,
+    HOME: home,
+    USERPROFILE: home,
+    NEXUM_DESKTOP_DIAGNOSTICS: "1"
   };
+  const child = spawn(executable, ["--no-sandbox"], {
+    cwd: appRoot,
+    env,
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  const output = captureProcessOutput(child);
+  try {
+    await waitForHealth(port, child, 60_000);
+    await waitForUiLoadedMarker(port, async () => output(), child, 20_000);
+    await verifyBrowserManagementFlow(port, project);
+  } catch (error) {
+    throw new Error(
+      `${error instanceof Error ? error.message : String(error)}; Desktop output: ${JSON.stringify(output())}`,
+      { cause: error }
+    );
+  } finally {
+    await terminateProcessTree(child.pid);
+    await rm(root, { recursive: true, force: true });
+  }
 }
 
 async function verifyEmbeddedRuntime(resourcesRoot, expectedSha) {
@@ -295,42 +301,89 @@ async function verifyEmbeddedRuntime(resourcesRoot, expectedSha) {
       `Desktop embedded Runtime identity mismatch: expected ${expectedSha}, got ${embedded.sha256 ?? "missing"}.`
     );
   }
-  await verifyRuntimeWebDesktopBridge(runtime);
-}
-
-async function verifyRuntimeWebDesktopBridge(runtime) {
-  const assetsRoot = join(runtime, "web", "assets");
-  const scripts = (await readdir(assetsRoot))
-    .filter((name) => name.endsWith(".js"))
-    .sort();
-  if (scripts.length === 0) {
-    throw new Error("Embedded Runtime web UI has no JavaScript assets.");
-  }
+  const assets = await readdir(join(runtime, "web", "assets"));
   const source = (
     await Promise.all(
-      scripts.map((name) => readFile(join(assetsRoot, name), "utf8"))
+      assets
+        .filter((name) => name.endsWith(".js"))
+        .map((name) => readFile(join(runtime, "web", "assets", name), "utf8"))
     )
   ).join("\n");
-  for (const command of [
+  if (!source.includes("/api/v1/local-directories")) {
+    throw new Error(
+      "Embedded Runtime Web UI has no local directory browser client."
+    );
+  }
+  for (const marker of [
+    "__TAURI__",
     "daemon_request",
-    "desktop_runtime_restart",
-    "desktop_runtime_status",
     "pick_project_folder",
-    "set_desktop_theme",
-    "show_system_notification",
-    "start_main_window_drag"
+    "desktop_runtime_"
   ]) {
-    if (!source.includes(command)) {
+    if (source.includes(marker)) {
       throw new Error(
-        `Embedded Runtime web UI is missing Desktop bridge command: ${command}`
+        `Embedded Runtime Web UI still contains obsolete Desktop bridge marker: ${marker}`
       );
     }
   }
-  if (source.includes("set_main_window_theme")) {
+}
+
+async function verifyBrowserManagementFlow(port, projectPath) {
+  const origin = `http://127.0.0.1:${port}`;
+  const headers = { origin, "sec-fetch-site": "same-origin" };
+  const state = await fetchJson(`${origin}/api/v1/management/state`, {
+    headers
+  });
+  if (!state.config?.effective)
     throw new Error(
-      "Embedded Runtime web UI still references obsolete set_main_window_theme command."
+      "Local management state is unavailable from Browser origin."
+    );
+  const directories = await fetchJson(
+    `${origin}/api/v1/local-directories?scope=allowed`,
+    { headers }
+  );
+  if (!directories.roots?.some((root) => root.path === projectPath)) {
+    throw new Error(
+      "Runtime directory browser did not expose the configured allowed root."
     );
   }
+  const projects = await fetchJson(`${origin}/api/v1/projects`, { headers });
+  if (!Array.isArray(projects.projects))
+    throw new Error("Project list is not available from Browser origin.");
+  const opened = await fetchJson(`${origin}/api/v1/projects/open`, {
+    method: "POST",
+    headers: { ...headers, "content-type": "application/json" },
+    body: JSON.stringify({ path: projectPath })
+  });
+  if (!opened.project?.id || opened.project.root !== projectPath) {
+    throw new Error(
+      "Browser-origin Project open did not return the selected canonical Project."
+    );
+  }
+  const processes = await fetchJson(
+    `${origin}/api/v1/processes?projectId=${encodeURIComponent(opened.project.id)}&maxResults=20`,
+    { headers }
+  );
+  if (!Array.isArray(processes.processes)) {
+    throw new Error("Process list is not available from Browser origin.");
+  }
+  const activity = await fetchJson(
+    `${origin}/api/v1/activity?projectId=${encodeURIComponent(opened.project.id)}&limit=20`,
+    { headers }
+  );
+  if (!Array.isArray(activity.records)) {
+    throw new Error("Activity list is not available from Browser origin.");
+  }
+}
+
+async function fetchJson(url, init) {
+  const response = await fetch(url, init);
+  if (!response.ok) {
+    throw new Error(
+      `${init?.method ?? "GET"} ${url} returned HTTP ${response.status}: ${await response.text()}`
+    );
+  }
+  return response.json();
 }
 
 function verifyWindowsGuiSubsystem(bytes) {
@@ -347,13 +400,13 @@ function verifyWindowsGuiSubsystem(bytes) {
   }
 }
 
-async function writeProductionConfig(home, port) {
+async function writeProductionConfig(home, port, allowedRoot) {
   const stateRoot = join(home, ".nexum");
   await mkdir(stateRoot, { recursive: true });
-  const allowedRoot = home.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
+  const root = allowedRoot.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
   await writeFile(
     join(stateRoot, "config.toml"),
-    `[daemon]\nhost = "127.0.0.1"\nport = ${port}\n\n[auth]\nmode = "off"\n\n[openai_tunnel]\nenabled = false\n\n[projects]\nallowed_roots = ["${allowedRoot}"]\n\n[logging]\nlevel = "warn"\n`,
+    `[daemon]\nhost = "127.0.0.1"\nport = ${port}\n\n[auth]\nmode = "off"\n\n[openai_tunnel]\nenabled = false\n\n[projects]\nallowed_roots = ["${root}"]\n\n[logging]\nlevel = "warn"\n`,
     "utf8"
   );
 }
@@ -402,21 +455,21 @@ async function waitForHealth(port, child, timeout) {
   );
 }
 
-async function waitForDesktopIpcBridge(child, output, timeout) {
-  const marker = "[nexum] Desktop IPC bridge succeeded:";
+async function waitForUiLoadedMarker(port, readOutput, child, timeout) {
+  const marker = `[nexum] Desktop UI loaded: http://127.0.0.1:${port}/`;
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
-    const captured = output();
-    if (`${captured.stdout}\n${captured.stderr}`.includes(marker)) return;
+    const output = await readOutput();
+    if (`${output.stdout}\n${output.stderr}`.includes(marker)) return;
     if (child.exitCode !== null) {
       throw new Error(
-        `Desktop exited before Runtime UI reached the native IPC bridge: ${child.exitCode}`
+        `Electron Desktop exited before Renderer loaded Runtime UI: ${child.exitCode}`
       );
     }
     await sleep(150);
   }
   throw new Error(
-    `Runtime UI never reached the Desktop native IPC bridge: ${JSON.stringify(output())}`
+    `Electron Renderer never loaded Runtime UI: ${JSON.stringify(await readOutput())}`
   );
 }
 
@@ -425,13 +478,20 @@ function captureProcessOutput(child) {
   let stderr = "";
   child.stdout?.on(
     "data",
-    (chunk) => (stdout = `${stdout}${chunk}`.slice(-4096))
+    (chunk) => (stdout = `${stdout}${chunk}`.slice(-8192))
   );
   child.stderr?.on(
     "data",
-    (chunk) => (stderr = `${stderr}${chunk}`.slice(-4096))
+    (chunk) => (stderr = `${stderr}${chunk}`.slice(-8192))
   );
   return () => ({ stdout: stdout.trim(), stderr: stderr.trim() });
+}
+
+async function readLogs(stdout, stderr) {
+  return {
+    stdout: await readFile(stdout, "utf8").catch(() => ""),
+    stderr: await readFile(stderr, "utf8").catch(() => "")
+  };
 }
 
 async function terminateProcessTree(pid) {
@@ -449,20 +509,6 @@ async function terminateProcessTree(pid) {
   }
 }
 
-async function findMacosExecutable(root) {
-  for (const entry of await readdir(root, { withFileTypes: true })) {
-    if (!entry.isFile()) continue;
-    const path = join(root, entry.name);
-    try {
-      await access(path, fsConstants.X_OK);
-      return path;
-    } catch {
-      // Continue scanning.
-    }
-  }
-  return undefined;
-}
-
 async function findFile(root, name, depth) {
   if (depth < 0) return undefined;
   let entries;
@@ -472,9 +518,9 @@ async function findFile(root, name, depth) {
     return undefined;
   }
   for (const entry of entries) {
-    const path = join(root, entry.name);
-    if (entry.isFile() && entry.name.toLowerCase() === name.toLowerCase())
-      return path;
+    if (entry.isFile() && entry.name.toLowerCase() === name.toLowerCase()) {
+      return join(root, entry.name);
+    }
   }
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
