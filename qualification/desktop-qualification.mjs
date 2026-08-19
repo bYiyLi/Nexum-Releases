@@ -150,6 +150,7 @@ async function qualifyWindowsInstaller(path, runtimeSha) {
   const home = await mkdtemp(join(tmpdir(), "nexum-electron-home-"));
   const project = join(home, "Project");
   const localAppData = join(home, "AppData", "Local");
+  const installRoot = join(home, "Nexum");
   await mkdir(project, { recursive: true });
   await mkdir(localAppData, { recursive: true });
   const port = await reserveLoopbackPort();
@@ -162,11 +163,14 @@ async function qualifyWindowsInstaller(path, runtimeSha) {
     NEXUM_DESKTOP_DIAGNOSTICS: "1"
   };
   requireSuccess(
-    spawnSync(path, ["/S"], { encoding: "utf8", env, windowsHide: true }),
+    spawnSync(path, ["/S", `/D=${installRoot}`], {
+      encoding: "utf8",
+      env,
+      windowsHide: true
+    }),
     "silent NSIS installation"
   );
 
-  const installRoot = join(localAppData, "Programs", "Nexum");
   const executable = await findFile(installRoot, "Nexum.exe", 4);
   if (!executable)
     throw new Error(`Installed Nexum.exe was not found under ${installRoot}.`);
@@ -279,7 +283,12 @@ async function qualifyLinuxAppImage(path, runtimeSha) {
     );
   } finally {
     await terminateProcessTree(child.pid);
-    await rm(root, { recursive: true, force: true });
+    await rm(root, {
+      recursive: true,
+      force: true,
+      maxRetries: 8,
+      retryDelay: 200
+    });
   }
 }
 
