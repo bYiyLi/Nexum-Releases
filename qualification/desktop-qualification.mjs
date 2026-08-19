@@ -169,6 +169,7 @@ async function qualifyWindowsInstaller(path, runtimeSha) {
   try {
     try {
       await waitForHealth(port, child, 60_000);
+      await waitForDesktopIpcBridge(child, output, 15_000);
     } catch (error) {
       const diagnostics = collectWindowsDiagnostics(child.pid, installEnv);
       throw new Error(
@@ -294,6 +295,42 @@ async function verifyEmbeddedRuntime(resourcesRoot, expectedSha) {
       `Desktop embedded Runtime identity mismatch: expected ${expectedSha}, got ${embedded.sha256 ?? "missing"}.`
     );
   }
+  await verifyRuntimeWebDesktopBridge(runtime);
+}
+
+async function verifyRuntimeWebDesktopBridge(runtime) {
+  const assetsRoot = join(runtime, "web", "assets");
+  const scripts = (await readdir(assetsRoot))
+    .filter((name) => name.endsWith(".js"))
+    .sort();
+  if (scripts.length === 0) {
+    throw new Error("Embedded Runtime web UI has no JavaScript assets.");
+  }
+  const source = (
+    await Promise.all(
+      scripts.map((name) => readFile(join(assetsRoot, name), "utf8"))
+    )
+  ).join("\n");
+  for (const command of [
+    "daemon_request",
+    "desktop_runtime_restart",
+    "desktop_runtime_status",
+    "pick_project_folder",
+    "set_desktop_theme",
+    "show_system_notification",
+    "start_main_window_drag"
+  ]) {
+    if (!source.includes(command)) {
+      throw new Error(
+        `Embedded Runtime web UI is missing Desktop bridge command: ${command}`
+      );
+    }
+  }
+  if (source.includes("set_main_window_theme")) {
+    throw new Error(
+      "Embedded Runtime web UI still references obsolete set_main_window_theme command."
+    );
+  }
 }
 
 function verifyWindowsGuiSubsystem(bytes) {
@@ -362,6 +399,24 @@ async function waitForHealth(port, child, timeout) {
   }
   throw new Error(
     `Timed out waiting for embedded Desktop Runtime: ${lastError instanceof Error ? lastError.message : "not ready"}`
+  );
+}
+
+async function waitForDesktopIpcBridge(child, output, timeout) {
+  const marker = "[nexum] Desktop IPC bridge succeeded:";
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    const captured = output();
+    if (`${captured.stdout}\n${captured.stderr}`.includes(marker)) return;
+    if (child.exitCode !== null) {
+      throw new Error(
+        `Desktop exited before Runtime UI reached the native IPC bridge: ${child.exitCode}`
+      );
+    }
+    await sleep(150);
+  }
+  throw new Error(
+    `Runtime UI never reached the Desktop native IPC bridge: ${JSON.stringify(output())}`
   );
 }
 

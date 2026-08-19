@@ -2,6 +2,8 @@
 
 mod daemon_bridge;
 mod daemon_lifecycle;
+#[cfg(test)]
+mod ipc_acl_tests;
 mod runtime_bootstrap;
 
 use daemon_lifecycle::DesktopDaemonManager;

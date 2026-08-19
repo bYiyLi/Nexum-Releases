@@ -1,4 +1,4 @@
-use crate::daemon_lifecycle::{DesktopDaemonManager, DesktopRuntimeStatus};
+use crate::daemon_lifecycle::{diagnostics_enabled, DesktopDaemonManager, DesktopRuntimeStatus};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Manager, State};
@@ -56,6 +56,12 @@ pub async fn daemon_request(
         .json::<Value>()
         .await
         .map_err(|error| format!("Local API returned invalid JSON: {error}"))?;
+    if diagnostics_enabled() {
+        eprintln!(
+            "[nexum] Desktop IPC bridge succeeded: {} {}",
+            request.method, request.path
+        );
+    }
     Ok(DaemonResponse { status, body })
 }
 

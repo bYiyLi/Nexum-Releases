@@ -350,7 +350,7 @@ fn start_launch(
     )
 }
 
-fn diagnostics_enabled() -> bool {
+pub(crate) fn diagnostics_enabled() -> bool {
     std::env::var_os("NEXUM_DESKTOP_DIAGNOSTICS").is_some_and(|value| value == "1")
 }
 

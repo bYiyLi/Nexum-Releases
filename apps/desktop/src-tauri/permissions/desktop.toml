@@ -1,0 +1,22 @@
+[[permission]]
+identifier = "local-shell"
+description = "Allows the bundled bootstrap and menu-bar surfaces to manage the Desktop shell lifecycle."
+commands.allow = [
+  "desktop_runtime_status",
+  "desktop_runtime_restart",
+  "open_main_window",
+  "quit_nexum",
+]
+
+[[permission]]
+identifier = "remote-runtime-ui"
+description = "Allows the loopback Runtime-served management UI to use the narrow Desktop native bridge."
+commands.allow = [
+  "desktop_runtime_status",
+  "desktop_runtime_restart",
+  "daemon_request",
+  "pick_project_folder",
+  "show_system_notification",
+  "start_main_window_drag",
+  "set_desktop_theme",
+]
