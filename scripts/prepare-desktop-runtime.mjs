@@ -9,8 +9,7 @@ import {
   stat,
   writeFile
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 const repoRoot = resolve(import.meta.dirname, "..");
 const args = parseArgs(process.argv.slice(2));
@@ -52,12 +51,15 @@ if (!checksums.includes(`${digest}  ${basename(artifact)}`)) {
   throw new Error("Desktop Runtime checksum file does not match the artifact.");
 }
 
-const extractionRoot = await mkdtemp(join(tmpdir(), "nexum-desktop-runtime-"));
+const artifactDirectory = dirname(artifact);
+const extractionRoot = await mkdtemp(
+  join(artifactDirectory, ".nexum-desktop-runtime-")
+);
 try {
   const extraction = spawnSync(
     "tar",
-    ["-xzf", artifact, "-C", extractionRoot],
-    { encoding: "utf8" }
+    ["-xzf", basename(artifact), "-C", basename(extractionRoot)],
+    { cwd: artifactDirectory, encoding: "utf8" }
   );
   if (extraction.status !== 0) {
     throw new Error(
