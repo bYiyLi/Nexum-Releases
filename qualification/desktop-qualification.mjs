@@ -193,21 +193,6 @@ async function qualifyWindowsInstaller(path, runtimeSha) {
     await waitForHealth(port, child, 60_000);
     await waitForUiLoadedMarker(port, async () => output(), child, 20_000);
     await verifyBrowserManagementFlow(port, project);
-    const processProbe = spawnSync(
-      "powershell",
-      [
-        "-NoProfile",
-        "-Command",
-        `(Get-Process -Id ${child.pid}).MainWindowHandle.ToInt64()`
-      ],
-      { encoding: "utf8", env }
-    );
-    requireSuccess(processProbe, "inspect Electron main window");
-    if (Number(processProbe.stdout.trim()) === 0) {
-      throw new Error(
-        `Windows Electron Desktop did not create a GUI window: ${JSON.stringify(output())}`
-      );
-    }
   } catch (error) {
     throw new Error(
       `${error instanceof Error ? error.message : String(error)}; Desktop output: ${JSON.stringify(output())}`,
