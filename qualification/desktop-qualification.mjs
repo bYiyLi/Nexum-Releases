@@ -14,6 +14,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
+import { canonicalDirectory, sameDirectory } from "./path-identity.mjs";
 
 const args = new Map();
 for (let index = 2; index < process.argv.length; index += 2) {
@@ -49,7 +50,10 @@ console.log(`Verified Electron Desktop installer: ${basename(installerPath)}`);
 
 async function qualifyMacosDmg(path, runtimeSha) {
   requireSuccess(
-    spawnSync("hdiutil", ["verify", path], { encoding: "utf8" }),
+    spawnSync("hdiutil", ["verify", path], {
+      encoding: "utf8",
+      timeout: 30_000
+    }),
     "DMG verify"
   );
   const root = await mkdtemp(
@@ -63,7 +67,7 @@ async function qualifyMacosDmg(path, runtimeSha) {
       spawnSync(
         "hdiutil",
         ["attach", path, "-readonly", "-nobrowse", "-mountpoint", mount],
-        { encoding: "utf8" }
+        { encoding: "utf8", timeout: 30_000 }
       ),
       "DMG attach"
     );
@@ -76,7 +80,8 @@ async function qualifyMacosDmg(path, runtimeSha) {
     await verifyEmbeddedRuntime(resources, runtimeSha);
     requireSuccess(
       spawnSync("codesign", ["--verify", "--deep", "--strict", app], {
-        encoding: "utf8"
+        encoding: "utf8",
+        timeout: 30_000
       }),
       "macOS bundle seal verification"
     );
@@ -84,7 +89,10 @@ async function qualifyMacosDmg(path, runtimeSha) {
   } finally {
     if (mounted) {
       requireSuccess(
-        spawnSync("hdiutil", ["detach", mount, "-force"], { encoding: "utf8" }),
+        spawnSync("hdiutil", ["detach", mount, "-force"], {
+          encoding: "utf8",
+          timeout: 30_000
+        }),
         "DMG detach"
       );
     }
@@ -96,62 +104,49 @@ async function qualifyMacosLaunch(app, executable) {
   const home = await mkdtemp(
     join(await realpath(tmpdir()), "nexum-electron-home-")
   );
-  const project = join(home, "Project");
-  const stdout = join(home, "desktop.stdout.log");
-  const stderr = join(home, "desktop.stderr.log");
+  const projectPath = join(home, "Project");
   const port = await reserveLoopbackPort();
-  await mkdir(project, { recursive: true });
+  await mkdir(projectPath, { recursive: true });
+  const project = await canonicalDirectory(projectPath);
   await writeProductionConfig(home, port, project);
-  const child = spawn(
-    "open",
-    [
-      "-n",
-      "-W",
-      "-o",
-      stdout,
-      "--stderr",
-      stderr,
-      app,
-      "--env",
-      `HOME=${home}`,
-      "--env",
-      `USERPROFILE=${home}`,
-      "--env",
-      "NEXUM_DESKTOP_DIAGNOSTICS=1"
-    ],
-    { stdio: "ignore" }
-  );
+  const child = spawn(executable, [], {
+    env: {
+      ...process.env,
+      HOME: home,
+      USERPROFILE: home,
+      NEXUM_DESKTOP_DIAGNOSTICS: "1"
+    },
+    detached: true,
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  const output = captureProcessOutput(child);
   try {
     await waitForHealth(port, child, 45_000);
-    await waitForUiLoadedMarker(
-      port,
-      () => readLogs(stdout, stderr),
-      child,
-      15_000
-    );
+    await waitForUiLoadedMarker(port, async () => output(), child, 15_000);
     await verifyBrowserManagementFlow(port, project);
-    const processProbe = spawnSync("pgrep", ["-f", executable], {
-      encoding: "utf8"
-    });
-    if (processProbe.status !== 0) {
+    if (child.exitCode !== null)
       throw new Error(
-        "LaunchServices did not leave the Electron application running."
+        `Electron Desktop exited during macOS qualification: ${JSON.stringify(output())}`
       );
-    }
   } finally {
-    spawnSync("pkill", ["-TERM", "-f", executable], { encoding: "utf8" });
-    await sleep(800);
-    if (child.exitCode === null) child.kill("SIGTERM");
-    await rm(home, { recursive: true, force: true });
+    await terminateProcessTree(child.pid);
+    disposeChildProcess(child);
+    await rm(home, {
+      recursive: true,
+      force: true,
+      maxRetries: 8,
+      retryDelay: 200
+    });
   }
 }
 
 async function qualifyWindowsInstaller(path, runtimeSha) {
   const home = await mkdtemp(join(tmpdir(), "nexum-electron-home-"));
-  const project = join(home, "Project");
+  const projectPath = join(home, "Project");
   const localAppData = join(home, "AppData", "Local");
   const installRoot = join(home, "Nexum");
-  await mkdir(project, { recursive: true });
+  await mkdir(projectPath, { recursive: true });
+  const project = await canonicalDirectory(projectPath);
   await mkdir(localAppData, { recursive: true });
   const port = await reserveLoopbackPort();
   await writeProductionConfig(home, port, project);
@@ -220,6 +215,7 @@ async function qualifyWindowsInstaller(path, runtimeSha) {
     );
   } finally {
     await terminateProcessTree(child.pid);
+    disposeChildProcess(child);
     const uninstaller = await findFile(installRoot, "Uninstall Nexum.exe", 2);
     if (uninstaller) {
       spawnSync(uninstaller, ["/S"], {
@@ -256,9 +252,10 @@ async function qualifyLinuxAppImage(path, runtimeSha) {
   await verifyEmbeddedRuntime(resources, runtimeSha);
 
   const home = await mkdtemp(join(root, "home-"));
-  const project = join(home, "Project");
+  const projectPath = join(home, "Project");
   const port = await reserveLoopbackPort();
-  await mkdir(project, { recursive: true });
+  await mkdir(projectPath, { recursive: true });
+  const project = await canonicalDirectory(projectPath);
   await writeProductionConfig(home, port, project);
   const env = {
     ...process.env,
@@ -269,6 +266,7 @@ async function qualifyLinuxAppImage(path, runtimeSha) {
   const child = spawn(executable, ["--no-sandbox"], {
     cwd: appRoot,
     env,
+    detached: true,
     stdio: ["ignore", "pipe", "pipe"]
   });
   const output = captureProcessOutput(child);
@@ -283,6 +281,7 @@ async function qualifyLinuxAppImage(path, runtimeSha) {
     );
   } finally {
     await terminateProcessTree(child.pid);
+    disposeChildProcess(child);
     await rm(root, {
       recursive: true,
       force: true,
@@ -351,9 +350,13 @@ async function verifyBrowserManagementFlow(port, projectPath) {
     `${origin}/api/v1/local-directories?scope=allowed`,
     { headers }
   );
-  if (!directories.roots?.some((root) => root.path === projectPath)) {
+  const exposedRoot = await findSameDirectory(
+    directories.roots?.map((root) => root.path),
+    projectPath
+  );
+  if (!exposedRoot) {
     throw new Error(
-      "Runtime directory browser did not expose the configured allowed root."
+      `Runtime directory browser did not expose the configured allowed root. expected=${projectPath} roots=${JSON.stringify(directories.roots?.map((root) => root.path) ?? [])}`
     );
   }
   const projects = await fetchJson(`${origin}/api/v1/projects`, { headers });
@@ -364,9 +367,12 @@ async function verifyBrowserManagementFlow(port, projectPath) {
     headers: { ...headers, "content-type": "application/json" },
     body: JSON.stringify({ path: projectPath })
   });
-  if (!opened.project?.id || opened.project.root !== projectPath) {
+  const openedProjectMatches =
+    typeof opened.project?.root === "string" &&
+    (await sameDirectory(opened.project.root, projectPath).catch(() => false));
+  if (!opened.project?.id || !openedProjectMatches) {
     throw new Error(
-      "Browser-origin Project open did not return the selected canonical Project."
+      `Browser-origin Project open did not return the selected canonical Project. expected=${projectPath} actual=${opened.project?.root ?? "missing"}`
     );
   }
   const processes = await fetchJson(
@@ -383,6 +389,15 @@ async function verifyBrowserManagementFlow(port, projectPath) {
   if (!Array.isArray(activity.records)) {
     throw new Error("Activity list is not available from Browser origin.");
   }
+}
+
+async function findSameDirectory(paths, expected) {
+  if (!Array.isArray(paths)) return undefined;
+  for (const path of paths) {
+    if (typeof path !== "string") continue;
+    if (await sameDirectory(path, expected).catch(() => false)) return path;
+  }
+  return undefined;
 }
 
 async function fetchJson(url, init) {
@@ -496,13 +511,6 @@ function captureProcessOutput(child) {
   return () => ({ stdout: stdout.trim(), stderr: stderr.trim() });
 }
 
-async function readLogs(stdout, stderr) {
-  return {
-    stdout: await readFile(stdout, "utf8").catch(() => ""),
-    stderr: await readFile(stderr, "utf8").catch(() => "")
-  };
-}
-
 async function terminateProcessTree(pid) {
   if (!pid) return;
   if (process.platform === "win32") {
@@ -511,11 +519,32 @@ async function terminateProcessTree(pid) {
     });
   } else {
     try {
-      process.kill(pid, "SIGTERM");
+      process.kill(-pid, "SIGTERM");
     } catch {
-      // Already exited.
+      try {
+        process.kill(pid, "SIGTERM");
+      } catch {
+        // Already exited.
+      }
+    }
+    await sleep(500);
+    try {
+      process.kill(-pid, "SIGKILL");
+    } catch {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // Already exited.
+      }
     }
   }
+}
+
+function disposeChildProcess(child) {
+  child.stdout?.destroy();
+  child.stderr?.destroy();
+  child.stdin?.destroy();
+  child.unref();
 }
 
 async function findFile(root, name, depth) {
