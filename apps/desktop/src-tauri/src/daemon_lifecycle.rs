@@ -89,6 +89,12 @@ impl DesktopDaemonManager {
                     return;
                 }
                 let ready = initialized.status.state == "ready";
+                if diagnostics_enabled() && !ready {
+                    eprintln!(
+                        "[nexum] Desktop Runtime initialization failed: {}",
+                        runtime_status_error(&initialized.status)
+                    );
+                }
                 let mut state = manager.inner.lock().expect("daemon state poisoned");
                 *state = initialized;
                 ready
@@ -286,13 +292,15 @@ fn start_launch(
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         command.creation_flags(CREATE_NO_WINDOW);
     }
-    let mut child = match command
+    command
         .current_dir(&launch.working_directory)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-    {
+        .stdin(Stdio::null());
+    if diagnostics_enabled() {
+        command.stdout(Stdio::inherit()).stderr(Stdio::inherit());
+    } else {
+        command.stdout(Stdio::null()).stderr(Stdio::null());
+    }
+    let mut child = match command.spawn() {
         Ok(child) => child,
         Err(error) => {
             return failed_state(
@@ -340,6 +348,10 @@ fn start_launch(
         "none",
         "Timed out waiting for Nexum Runtime Daemon readiness.".to_string(),
     )
+}
+
+fn diagnostics_enabled() -> bool {
+    std::env::var_os("NEXUM_DESKTOP_DIAGNOSTICS").is_some_and(|value| value == "1")
 }
 
 fn probe_daemon(origin: &str) -> ProbeResult {

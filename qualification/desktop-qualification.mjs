@@ -135,7 +135,8 @@ async function qualifyWindowsInstaller(path, runtimeSha) {
     ...process.env,
     LOCALAPPDATA: localAppData,
     USERPROFILE: home,
-    HOME: home
+    HOME: home,
+    NEXUM_DESKTOP_DIAGNOSTICS: "1"
   };
   requireSuccess(
     spawnSync(path, ["/S"], { encoding: "utf8", env: installEnv }),
@@ -156,6 +157,7 @@ async function qualifyWindowsInstaller(path, runtimeSha) {
     "bundled Desktop Node bootstrap"
   );
   await verifyEmbeddedRuntime(installRoot, runtimeSha);
+  await qualifyWindowsEmbeddedRuntimeDirectly(installRoot, installEnv);
   const port = await reserveLoopbackPort();
   await writeProductionConfig(home, port);
   const child = spawn(executable, [], {
@@ -168,8 +170,9 @@ async function qualifyWindowsInstaller(path, runtimeSha) {
     try {
       await waitForHealth(port, child, 60_000);
     } catch (error) {
+      const diagnostics = collectWindowsDiagnostics(child.pid, installEnv);
       throw new Error(
-        `${error instanceof Error ? error.message : String(error)}; Desktop output: ${JSON.stringify(output())}`,
+        `${error instanceof Error ? error.message : String(error)}; Desktop output: ${JSON.stringify(output())}; Windows diagnostics: ${JSON.stringify(diagnostics)}`,
         { cause: error }
       );
     }
@@ -201,6 +204,76 @@ async function qualifyWindowsInstaller(path, runtimeSha) {
       retryDelay: 200
     });
   }
+}
+
+async function qualifyWindowsEmbeddedRuntimeDirectly(installRoot, installEnv) {
+  const home = await mkdtemp(join(tmpdir(), "nexum-desktop-runtime-home-"));
+  const port = await reserveLoopbackPort();
+  await writeProductionConfig(home, port);
+  const env = {
+    ...installEnv,
+    HOME: home,
+    USERPROFILE: home
+  };
+  const child = spawn(
+    join(installRoot, "bootstrap", "node.exe"),
+    [
+      join(installRoot, "runtime", "dist", "main.js"),
+      "--profile",
+      "production",
+      "start"
+    ],
+    {
+      cwd: join(installRoot, "runtime"),
+      env,
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"]
+    }
+  );
+  const output = captureProcessOutput(child);
+  try {
+    await waitForHealth(port, child, 30_000);
+  } catch (error) {
+    throw new Error(
+      `Installed embedded Runtime could not start directly: ${error instanceof Error ? error.message : String(error)}; output=${JSON.stringify(output())}`,
+      { cause: error }
+    );
+  } finally {
+    await terminateProcessTree(child.pid);
+    await rm(home, {
+      recursive: true,
+      force: true,
+      maxRetries: 8,
+      retryDelay: 200
+    });
+  }
+}
+
+function collectWindowsDiagnostics(pid, env) {
+  const processProbe = spawnSync(
+    "powershell",
+    [
+      "-NoProfile",
+      "-Command",
+      `$root=${pid}; Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -eq $root -or $_.ParentProcessId -eq $root -or $_.CommandLine -like '*runtime\\dist\\main.js*' } | Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress`
+    ],
+    { encoding: "utf8", env }
+  );
+  const listenerProbe = spawnSync(
+    "powershell",
+    [
+      "-NoProfile",
+      "-Command",
+      "Get-NetTCPConnection -State Listen | Where-Object { $_.LocalAddress -eq '127.0.0.1' } | Select-Object LocalAddress,LocalPort,OwningProcess | ConvertTo-Json -Compress"
+    ],
+    { encoding: "utf8", env }
+  );
+  return {
+    processes: processProbe.stdout.trim(),
+    processProbeError: processProbe.stderr.trim(),
+    listeners: listenerProbe.stdout.trim(),
+    listenerProbeError: listenerProbe.stderr.trim()
+  };
 }
 
 async function verifyEmbeddedRuntime(resourcesRoot, expectedSha) {
