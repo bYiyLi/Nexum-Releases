@@ -4,9 +4,11 @@ import { access, readFile, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import process from "node:process";
 
-const require = createRequire(import.meta.url);
-const { listPackage } = require("@electron/asar");
 const repoRoot = resolve(import.meta.dirname, "..");
+const desktopRequire = createRequire(
+  new URL("../apps/desktop/package.json", import.meta.url)
+);
+const { listPackage } = desktopRequire("@electron/asar");
 const args = new Map();
 for (let index = 2; index < process.argv.length; index += 2) {
   args.set(process.argv[index], process.argv[index + 1]);
@@ -17,10 +19,7 @@ const resourcesRoot =
   process.platform === "darwin"
     ? join(appRoot, "Contents", "Resources")
     : join(appRoot, "resources");
-const executable =
-  process.platform === "darwin"
-    ? join(appRoot, "Contents", "MacOS", "Nexum")
-    : join(appRoot, "Nexum.exe");
+const executable = desktopExecutable(appRoot);
 const nodePath = join(
   resourcesRoot,
   "node",
@@ -55,9 +54,25 @@ function defaultAppRoot() {
   if (process.platform === "win32" && process.arch === "x64") {
     return join(repoRoot, "apps", "desktop", "out", "win-unpacked");
   }
+  if (process.platform === "linux" && process.arch === "x64") {
+    return join(repoRoot, "apps", "desktop", "out", "linux-unpacked");
+  }
   throw new Error(
     `Desktop release verification does not support ${process.platform}-${process.arch}`
   );
+}
+
+function desktopExecutable(root) {
+  if (process.platform === "darwin") {
+    return join(root, "Contents", "MacOS", "Nexum");
+  }
+  if (process.platform === "win32") {
+    return join(root, "Nexum.exe");
+  }
+  if (process.platform === "linux") {
+    return join(root, "Nexum");
+  }
+  throw new Error(`Unsupported Desktop platform: ${process.platform}`);
 }
 
 async function verifyShellAsar(path) {

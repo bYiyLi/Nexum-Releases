@@ -1,5 +1,6 @@
 appId: com.nexum.desktop
 productName: Nexum
+executableName: Nexum
 asar: true
 afterPack: scripts/after-pack.mjs
 
@@ -10,7 +11,6 @@ files:
   - dist/**/*.js
   - "!dist/**/*.test.js"
   - assets/bootstrap.html
-  - icons/icon.png
   - icons/icon.png
 
 extraResources:
