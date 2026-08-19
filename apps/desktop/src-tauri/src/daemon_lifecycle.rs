@@ -15,7 +15,10 @@ use tauri::{AppHandle, Manager};
 
 const DEFAULT_DAEMON_PORT: u16 = 38_400;
 const DEVELOPMENT_DAEMON_PORT: u16 = 38_401;
-const STARTUP_TIMEOUT: Duration = Duration::from_secs(12);
+// First launch on Windows can spend noticeable time in OS security scanning before the
+// bundled Node process begins executing. Startup is fully off the UI thread, so keep a
+// bounded but generous readiness window instead of killing a healthy cold start early.
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(45);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(4);
 
 #[derive(Clone, Debug, Serialize)]

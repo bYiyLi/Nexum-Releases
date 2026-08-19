@@ -145,7 +145,16 @@ async function qualifyWindowsInstaller(path, runtimeSha) {
   const executable = join(installRoot, "nexum-desktop.exe");
   await access(executable, fsConstants.X_OK);
   verifyWindowsGuiSubsystem(await readFile(executable));
-  await access(join(installRoot, "bootstrap", "node.exe"), fsConstants.X_OK);
+  const bundledNode = join(installRoot, "bootstrap", "node.exe");
+  await access(bundledNode, fsConstants.X_OK);
+  requireSuccess(
+    spawnSync(bundledNode, ["--version"], {
+      encoding: "utf8",
+      env: installEnv,
+      windowsHide: true
+    }),
+    "bundled Desktop Node bootstrap"
+  );
   await verifyEmbeddedRuntime(installRoot, runtimeSha);
   const port = await reserveLoopbackPort();
   await writeProductionConfig(home, port);
@@ -156,7 +165,14 @@ async function qualifyWindowsInstaller(path, runtimeSha) {
   });
   const output = captureProcessOutput(child);
   try {
-    await waitForHealth(port, child, 30_000);
+    try {
+      await waitForHealth(port, child, 60_000);
+    } catch (error) {
+      throw new Error(
+        `${error instanceof Error ? error.message : String(error)}; Desktop output: ${JSON.stringify(output())}`,
+        { cause: error }
+      );
+    }
     const processProbe = spawnSync(
       "powershell",
       [
@@ -224,9 +240,10 @@ function verifyWindowsGuiSubsystem(bytes) {
 async function writeProductionConfig(home, port) {
   const stateRoot = join(home, ".nexum");
   await mkdir(stateRoot, { recursive: true });
+  const allowedRoot = home.replaceAll("\\", "\\\\").replaceAll('"', '\\"');
   await writeFile(
     join(stateRoot, "config.toml"),
-    `[daemon]\nport = ${port}\n`,
+    `[daemon]\nhost = "127.0.0.1"\nport = ${port}\n\n[auth]\nmode = "off"\n\n[openai_tunnel]\nenabled = false\n\n[projects]\nallowed_roots = ["${allowedRoot}"]\n\n[logging]\nlevel = "warn"\n`,
     "utf8"
   );
 }
