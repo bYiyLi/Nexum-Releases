@@ -1,0 +1,14 @@
+{
+  "name": "@nexum/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "prepare:bootstrap": "node ../../scripts/prepare-desktop-bootstrap.mjs",
+    "prepare:runtime": "node ../../scripts/prepare-desktop-runtime.mjs",
+    "dev": "pnpm --dir ../.. build:runtime-release && pnpm prepare:runtime && cargo tauri dev --config src-tauri/tauri.dev.conf.json",
+    "build": "cargo tauri build && node ../../scripts/verify-desktop-release.mjs",
+    "build:macos-local-release": "pnpm --dir ../.. build:runtime-release && pnpm prepare:runtime && cargo tauri build --bundles app --no-sign --ci && node ../../scripts/verify-desktop-release.mjs && node ../../scripts/package-macos-dmg.mjs && node ../../scripts/verify-macos-dmg.mjs --adhoc && node ../../scripts/write-macos-release-notes.mjs",
+    "check:macos-release-prerequisites": "node ../../scripts/check-macos-release-prerequisites.mjs",
+    "check:rust": "cargo check --manifest-path src-tauri/Cargo.toml"
+  }
+}

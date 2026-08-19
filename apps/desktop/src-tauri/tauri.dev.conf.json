@@ -1,0 +1,12 @@
+{
+  "productName": "Nexum Dev",
+  "identifier": "com.nexum.desktop.dev",
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Nexum Dev"
+      }
+    ]
+  }
+}
