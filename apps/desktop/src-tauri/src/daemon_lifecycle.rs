@@ -734,6 +734,7 @@ mod tests {
             .expect("spawn long running child")
     }
 
+    #[cfg(unix)]
     fn manager_with_state(state: LifecycleState) -> DesktopDaemonManager {
         DesktopDaemonManager {
             inner: Mutex::new(state),
